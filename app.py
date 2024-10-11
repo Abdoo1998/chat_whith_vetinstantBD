@@ -32,8 +32,7 @@ def diagnose_and_connect_database():
         print(f"Error inspecting database: {e}")
         return None, []
 
-# The rest of the code remains the same...
-
+# Function to create agents
 def create_agents():
     engine, available_tables = diagnose_and_connect_database()
     if not engine:
@@ -55,7 +54,7 @@ def create_agents():
     formatting_prompt = PromptTemplate.from_template(
         """As a specialized Veterinary Database Assistant, please provide a comprehensive and insightful response based on the SQL query results. Your answer should:
 
-    Your primary goals are to:
+        Your primary goals are to:
         1. Understand and accurately interpret veterinary queries.
         2. Utilize the Veterinary SQL Database tool to extract relevant information.
         3. Analyze the data in the context of veterinary practice and animal health.
@@ -75,9 +74,8 @@ def create_agents():
         Human: {input}
         AI: Certainly, I'd be happy to help with that veterinary query. Let's break this down step by step:
 
-
-    SQL Agent Response: {agent_response}
-    Formatted Answer:"""
+        SQL Agent Response: {agent_response}
+        Formatted Answer:"""
     )
     formatting_chain = formatting_prompt | llm | StrOutputParser()
 
@@ -104,15 +102,18 @@ def create_agents():
 
     return sql_agent, formatting_chain, main_agent
 
+# Process the user's query through the agent
 def process_query(agent, query):
     try:
-        result = agent.run(query)
+        # Pass the query as a dictionary to match the expected keys
+        result = agent.run({"input": query})
         return result
     except Exception as e:
         print(f"An error occurred: {e}")
         traceback.print_exc()
         return f"An error occurred: {str(e)}"
 
+# Main script to handle user queries
 if __name__ == "__main__":
     sql_agent, formatting_chain, main_agent = create_agents()
 
@@ -121,7 +122,16 @@ if __name__ == "__main__":
             user_query = input("Enter your query (or 'exit' to quit): ")
             if user_query.lower() == 'exit':
                 break
-            response = process_query(main_agent, user_query)
-            print("Response:", response)
+
+            # Run SQL agent to get the response from the database
+            sql_agent_result = process_query(sql_agent, user_query)
+
+            # Format the response using the response formatting agent
+            formatted_response = formatting_chain.invoke({
+                "input": user_query,
+                "agent_response": sql_agent_result
+            })
+
+            print("Formatted Response:", formatted_response)
     else:
         print("Failed to initialize agents. Please check your database connection and try again.")
