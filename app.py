@@ -10,6 +10,7 @@ from langchain.agents import initialize_agent, Tool
 from langchain.agents import AgentType
 import traceback
 import json
+from urllib.parse import quote_plus  # Add this import
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +32,8 @@ def diagnose_and_connect_database():
         print(f"Error inspecting database: {e}")
         return None, []
 
+# The rest of the code remains the same...
+
 def create_agents():
     engine, available_tables = diagnose_and_connect_database()
     if not engine:
@@ -40,7 +43,7 @@ def create_agents():
     db = SQLDatabase(engine, include_tables=available_tables)
     llm = ChatOpenAI(api_key=openai_key, model="gpt-4")
 
-    # 1. SQL Agent
+    # SQL Agent
     sql_agent = create_sql_agent(
         llm=llm,
         db=db,
@@ -48,7 +51,7 @@ def create_agents():
         verbose=True
     )
 
-    # 2. Response Formatting Agent
+    # Response Formatting Agent
     formatting_prompt = PromptTemplate.from_template(
         """As a specialized Veterinary Database Assistant, please provide a comprehensive and insightful response based on the SQL query results. Your answer should:
 
@@ -78,7 +81,7 @@ def create_agents():
     )
     formatting_chain = formatting_prompt | llm | StrOutputParser()
 
-    # 3. Main Agent
+    # Main Agent
     tools = [
         Tool(
             name="SQL Database",
