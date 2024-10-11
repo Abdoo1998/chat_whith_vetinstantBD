@@ -1,59 +1,45 @@
-from fastapi import FastAPI, HTTPException, Depends
-from pydantic import BaseModel, Field
-from typing import Optional, Dict
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect
 from langchain_community.utilities import SQLDatabase
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-
-app = FastAPI()
+from langchain.agents import initialize_agent, Tool
+from langchain.agents import AgentType
+import traceback
+import json
 
 # Load environment variables
 load_dotenv()
 openai_key = os.getenv("OPENAI_API_KEY")
 
-# Global dictionary to store initialized components
-initialized_components: Dict[str, tuple] = {}
-
-class InitRequest(BaseModel):
-    db_url: str = Field(..., description="The database URL to connect to")
-    table_descriptions: Optional[str] = Field(None, description="Optional description of database tables")
-
-class QueryRequest(BaseModel):
-    query: str = Field(..., description="The natural language query to process")
-
-class InitResponse(BaseModel):
-    message: str
-
-class QueryResponse(BaseModel):
-    answer: str
-
-def diagnose_and_connect_database(db_url):
+def diagnose_and_connect_database():
+    print("Connecting to MySQL database...")
+    db_url = "mysql+mysqlconnector://root:Vetinstant@9588#!@localhost/vetinstant"
+    engine = create_engine(db_url)
+    inspector = inspect(engine)
     try:
-        engine = create_engine(db_url)
-        inspector = inspect(engine)
         tables = inspector.get_table_names()
+        print("Tables found in the database:")
+        for table in tables:
+            print(f"- {table}")
         return engine, tables
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error connecting to database: {str(e)}")
+        print(f"Error inspecting database: {e}")
+        return None, []
 
-def create_agents(db_url, table_descriptions):
-    engine, available_tables = diagnose_and_connect_database(db_url)
+def create_agents():
+    engine, available_tables = diagnose_and_connect_database()
+    if not engine:
+        print("Failed to connect to the database. Exiting.")
+        return None, None, None
+
     db = SQLDatabase(engine, include_tables=available_tables)
-    llm = AzureChatOpenAI(
-        azure_deployment="gpt-4o",
-        model="gpt-4o",
-        api_version="2024-02-15-preview",
-        azure_endpoint="https://notice-parser-openai-gpt4.openai.azure.com/",
-        temperature=0.5,
-        api_key="d6a6fd2468ea4f76993b8323e5a5e736",
-        seed=235,
-    )
-    # SQL Agent
+    llm = ChatOpenAI(api_key=openai_key, model="gpt-4")
+
+    # 1. SQL Agent
     sql_agent = create_sql_agent(
         llm=llm,
         db=db,
@@ -61,70 +47,77 @@ def create_agents(db_url, table_descriptions):
         verbose=True
     )
 
-    # Response Formatting Agent
+    # 2. Response Formatting Agent
     formatting_prompt = PromptTemplate.from_template(
-       """
-SQL Agent Response: {agent_response}
-Table Descriptions: {table_descriptions}
-Instructions:
+        """As a specialized Veterinary Database Assistant, please provide a comprehensive and insightful response based on the SQL query results. Your answer should:
 
-Carefully analyze the user's question to understand the core information they're seeking.
-Review the database schema and table descriptions to identify relevant tables and relationships.
-(Note: An SQL query has already been constructed and executed to answer the user's question.)
-Interpret the query results in a way that directly addresses the user's question.
-Provide a clear, concise explanation of the findings in natural language.
-If appropriate, offer insights or implications based on the data.
-Use analogies or real-world examples to make complex data more relatable.
-If the results are numerical, consider providing context or comparisons to make them more meaningful.
-Address any potential limitations or caveats in the data or analysis.
-Suggest follow-up questions or areas for further investigation if relevant.
+    Your primary goals are to:
+        1. Understand and accurately interpret veterinary queries.
+        2. Utilize the Veterinary SQL Database tool to extract relevant information.
+        3. Analyze the data in the context of veterinary practice and animal health.
+        4. Provide insights that are valuable for veterinary decision-making and patient care.
+        5. Use the Veterinary Response Formatter to present information in a clear, professional manner suited for veterinary staff.
 
-Important:
+        Remember to consider factors such as:
+        - Species-specific health concerns
+        - Age-related health issues in animals
+        - Seasonal patterns in animal health and diseases
+        - Vaccination and preventive care schedules
+        - Trends in treatment efficacy
+        - Owner compliance patterns
+        - Clinic operational insights
 
-Do not include technical details about the SQL query or database structure.
-Focus on explaining the results in a way that a non-technical person can understand.
-If the data reveals any trends or patterns, highlight these in your explanation.
-Use a conversational tone while maintaining professionalism and accuracy.
-    Answer:"""
+        Current conversation:
+        Human: {input}
+        AI: Certainly, I'd be happy to help with that veterinary query. Let's break this down step by step:
+
+
+    SQL Agent Response: {agent_response}
+    Formatted Answer:"""
     )
     formatting_chain = formatting_prompt | llm | StrOutputParser()
 
-    return sql_agent, formatting_chain, table_descriptions
+    # 3. Main Agent
+    tools = [
+        Tool(
+            name="SQL Database",
+            func=sql_agent.run,
+            description="Useful for querying the veterinary database"
+        ),
+        Tool(
+            name="Response Formatter",
+            func=formatting_chain.invoke,
+            description="Useful for formatting the final response to the user"
+        )
+    ]
 
-@app.post("/initialize", response_model=InitResponse)
-async def initialize(request: InitRequest):
+    main_agent = initialize_agent(
+        tools,
+        llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True
+    )
+
+    return sql_agent, formatting_chain, main_agent
+
+def process_query(agent, query):
     try:
-        sql_agent, formatting_chain, table_descriptions = create_agents(request.db_url, request.table_descriptions)
-        initialized_components[request.db_url] = (sql_agent, formatting_chain, table_descriptions)
-        return InitResponse(message="Initialization successful")
+        result = agent.run(query)
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred during initialization: {str(e)}")
-
-def get_initialized_components(db_url: str):
-    components = initialized_components.get(db_url)
-    if not components:
-        raise HTTPException(status_code=400, detail="Database not initialized. Please call /initialize first.")
-    return components
-
-@app.post("/process_query", response_model=QueryResponse)
-async def process_query(request: QueryRequest, db_url: str):
-    try:
-        sql_agent, formatting_chain, table_descriptions = get_initialized_components(db_url)
-        
-        # Get result from SQL agent
-        sql_result = sql_agent.invoke({"input": request.query})
-        
-        # Format the response
-        formatted_response = formatting_chain.invoke({
-            "agent_response": sql_result['output'],
-            "table_descriptions": table_descriptions or "No table descriptions provided."
-        })
-        
-        return QueryResponse(answer=formatted_response)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred while processing the query: {str(e)}")
+        print(f"An error occurred: {e}")
+        traceback.print_exc()
+        return f"An error occurred: {str(e)}"
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7000)
+    sql_agent, formatting_chain, main_agent = create_agents()
+
+    if main_agent:
+        while True:
+            user_query = input("Enter your query (or 'exit' to quit): ")
+            if user_query.lower() == 'exit':
+                break
+            response = process_query(main_agent, user_query)
+            print("Response:", response)
+    else:
+        print("Failed to initialize agents. Please check your database connection and try again.")
