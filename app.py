@@ -17,7 +17,8 @@ openai_key = os.getenv("OPENAI_API_KEY")
 
 def diagnose_and_connect_database():
     print("Connecting to MySQL database...")
-    db_url = "mysql+mysqlconnector://root:Vetinstant@9588#!@localhost/vetinstant"
+    password = quote_plus("Vetinstant@9588#!")
+    db_url = f"mysql+mysqlconnector://root:{password}@localhost/vetinstant"
     engine = create_engine(db_url)
     inspector = inspect(engine)
     try:
