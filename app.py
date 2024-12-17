@@ -89,7 +89,7 @@ def create_agents():
                 schema_description += f"  - {fk['constrained_columns']} -> {fk['referred_table']}.{fk['referred_columns']}\n"
 
     db = SQLDatabase(engine, include_tables=[t['name'] for t in schema_info])
-    llm = ChatOpenAI(api_key=openai_key, model="gpt-4")
+    llm = ChatOpenAI(api_key=openai_key, model="gpt-4o")
 
     # Update SQL Agent with schema information
     sql_agent = create_sql_agent(
