@@ -22,46 +22,111 @@ def diagnose_and_connect_database():
     db_url = f"mysql+mysqlconnector://root:{password}@localhost/vetinstant"
     engine = create_engine(db_url)
     inspector = inspect(engine)
+    
     try:
+        # Get all tables
         tables = inspector.get_table_names()
-        print("Tables found in the database:")
+        print("\nDatabase Schema Information:")
+        
+        # Store schema information
+        schema_info = []
+        
         for table in tables:
-            print(f"- {table}")
-        return engine, tables
+            print(f"\nTable: {table}")
+            
+            # Get columns
+            columns = inspector.get_columns(table)
+            print("Columns:")
+            for column in columns:
+                print(f"  - {column['name']} ({column['type']})")
+            
+            # Get primary keys
+            pk = inspector.get_pk_constraint(table)
+            if pk['constrained_columns']:
+                print(f"Primary Key: {pk['constrained_columns']}")
+            
+            # Get foreign keys
+            fks = inspector.get_foreign_keys(table)
+            if fks:
+                print("Foreign Keys:")
+                for fk in fks:
+                    print(f"  - {fk['constrained_columns']} -> {fk['referred_table']}.{fk['referred_columns']}")
+            
+            # Store schema information for the table
+            table_info = {
+                'name': table,
+                'columns': [{'name': col['name'], 'type': str(col['type'])} for col in columns],
+                'primary_key': pk['constrained_columns'] if pk else [],
+                'foreign_keys': fks
+            }
+            schema_info.append(table_info)
+            
+        return engine, schema_info
     except Exception as e:
         print(f"Error inspecting database: {e}")
+        traceback.print_exc()
         return None, []
 
 # Function to create agents
 def create_agents():
-    engine, available_tables = diagnose_and_connect_database()
+    engine, schema_info = diagnose_and_connect_database()
     if not engine:
         print("Failed to connect to the database. Exiting.")
         return None, None, None
 
-    db = SQLDatabase(engine, include_tables=available_tables)
+    # Create schema description for the prompt
+    schema_description = "Database Schema:\n"
+    for table in schema_info:
+        schema_description += f"\nTable: {table['name']}\n"
+        schema_description += "Columns:\n"
+        for col in table['columns']:
+            schema_description += f"  - {col['name']} ({col['type']})\n"
+        if table['primary_key']:
+            schema_description += f"Primary Key: {', '.join(table['primary_key'])}\n"
+        if table['foreign_keys']:
+            schema_description += "Foreign Keys:\n"
+            for fk in table['foreign_keys']:
+                schema_description += f"  - {fk['constrained_columns']} -> {fk['referred_table']}.{fk['referred_columns']}\n"
+
+    db = SQLDatabase(engine, include_tables=[t['name'] for t in schema_info])
     llm = ChatOpenAI(api_key=openai_key, model="gpt-4")
 
-    # SQL Agent
+    # Update SQL Agent with schema information
     sql_agent = create_sql_agent(
         llm=llm,
         db=db,
         agent_type="openai-tools",
-        verbose=True
+        verbose=True,
+        prefix=f"""You are an expert SQL agent for a veterinary database. 
+        You have access to the following database schema:
+        
+        {schema_description}
+        
+        When forming SQL queries:
+        1. Consider table relationships through foreign keys
+        2. Use appropriate JOIN operations when querying related tables
+        3. Always consider data types when comparing values
+        4. Use appropriate WHERE clauses to filter data
+        5. Consider using appropriate indexes for better performance
+        """
     )
 
-    # Response Formatting Agent
+    # Update formatting prompt with schema awareness
     formatting_prompt = PromptTemplate.from_template(
-        """As a specialized Veterinary Database Assistant, please provide a comprehensive and insightful response based on the SQL query results. Your answer should:
+        """As a specialized Veterinary Database Assistant with full knowledge of the database schema:
+
+        {schema_description}
 
         Your primary goals are to:
-        1. Understand and accurately interpret veterinary queries.
-        2. Utilize the Veterinary SQL Database tool to extract relevant information.
-        3. Analyze the data in the context of veterinary practice and animal health.
-        4. Provide insights that are valuable for veterinary decision-making and patient care.
-        5. Use the Veterinary Response Formatter to present information in a clear, professional manner suited for veterinary staff.
+        1. Understand and accurately interpret veterinary queries using the complete schema knowledge
+        2. Utilize table relationships and foreign keys effectively
+        3. Analyze the data in the context of veterinary practice and animal health
+        4. Provide insights that are valuable for veterinary decision-making and patient care
+        5. Present information in a clear, professional manner suited for veterinary staff
 
-        Remember to consider factors such as:
+        Consider:
+        - Relationships between different tables in the database
+        - Data consistency across related tables
         - Species-specific health concerns
         - Age-related health issues in animals
         - Seasonal patterns in animal health and diseases
@@ -70,25 +135,26 @@ def create_agents():
         - Owner compliance patterns
         - Clinic operational insights
 
-        Current conversation:
+        Current query:
         Human: {input}
-        AI: Certainly, I'd be happy to help with that veterinary query. Let's break this down step by step:
-
+        
         SQL Agent Response: {agent_response}
+        
         Formatted Answer:"""
     )
+    
     formatting_chain = formatting_prompt | llm | StrOutputParser()
 
-    # Main Agent
+    # Rest of the code remains the same
     tools = [
         Tool(
             name="SQL Database",
             func=sql_agent.run,
-            description="Useful for querying the veterinary database"
+            description="Useful for querying the veterinary database with full schema awareness"
         ),
         Tool(
             name="Response Formatter",
-            func=formatting_chain.invoke,
+            func=lambda x: formatting_chain.invoke({**x, 'schema_description': schema_description}),
             description="Useful for formatting the final response to the user"
         )
     ]
@@ -105,13 +171,25 @@ def create_agents():
 # Process the user's query through the agent
 def process_query(agent, query):
     try:
-        # Pass the query as a dictionary to match the expected keys
         result = agent.run({"input": query})
         return result
     except Exception as e:
-        print(f"An error occurred: {e}")
+        error_message = f"""
+        An error occurred while processing your query:
+        Error type: {type(e).__name__}
+        Error details: {str(e)}
+        
+        This might be due to:
+        1. Invalid table or column references
+        2. Syntax errors in the generated SQL
+        3. Database connection issues
+        4. Data type mismatches
+        
+        Please try rephrasing your question or contact support if the issue persists.
+        """
+        print(error_message)
         traceback.print_exc()
-        return f"An error occurred: {str(e)}"
+        return error_message
 
 # Main script to handle user queries
 if __name__ == "__main__":
