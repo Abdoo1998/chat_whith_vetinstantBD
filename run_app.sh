@@ -1,5 +1,5 @@
 # Set the name of your Python script
-PYTHON_SCRIPT="app.py"
+PYTHON_SCRIPT="server.py"
 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
